@@ -1,12 +1,11 @@
 """Event-based representation input interface."""
-from collections import defaultdict
-from operator import attrgetter
+from typing import Optional, TYPE_CHECKING
 
-import numpy as np
 from numpy import ndarray
 
-from ..classes import Note, Track
-from ..music import DEFAULT_RESOLUTION, Music
+from ..music import DEFAULT_RESOLUTION
+if TYPE_CHECKING:
+    from ..music import Music
 
 
 def from_event_representation(
@@ -20,7 +19,13 @@ def from_event_representation(
     velocity_bins: int = 32,
     default_velocity: int = 64,
     duplicate_note_mode: str = "fifo",
-) -> Music:
+    encode_velocity: bool = False,
+    force_velocity_event: bool = True,
+    encode_instrument: bool = False,
+    encode_drum_program: bool = False,
+    num_tracks: Optional[int] = None,
+    ignore_empty_tracks: bool = False,
+) -> "Music":
     """Decode event-based representation into a Music object.
 
     Parameters
@@ -64,6 +69,20 @@ def from_event_representation(
         - 'fifo' (first in first out): close the earliest note on
         - 'lifo' (first in first out): close the latest note on
         - 'close_all': close all note on messages
+    encode_instrument: bool
+        Whether to encode the `program` and `is_drum` attributes for
+        each track. Defaults to False.
+    encode_drum_program: bool
+        Whether to encode `program` (drum kit) for drums. Defaults to
+        False, which means 0 (standard drum kit) will be used. Has no
+        effect if `encode_instrument` is False.
+    num_tracks: int or None
+        The maximum number of tracks. Defaults to None, which means
+        single-track mode (encode all events as if they were in one
+        track).
+    ignore_empty_tracks: bool
+        Whether empty tracks should be ignored when encoding and deleted
+        when decoding. Defaults to False.
 
     Returns
     -------
@@ -75,108 +94,22 @@ def from_event_representation(
     [1] https://www.midi.org/specifications/item/gm-level-1-sound-set
 
     """
-    # Cast the array to integer
-    if not np.issubdtype(array.dtype, np.integer):
-        array = array.astype(np.int)
-
-    # Compute offsets
-    offset_note_on = 0
-    offset_note_off = 128
-    offset_time_shift = 129 if use_single_note_off_event else 256
-    offset_velocity = offset_time_shift + max_time_shift
-    if use_end_of_sequence_event:
-        offset_eos = offset_velocity + velocity_bins
-
-    # Compute vocabulary size
-    if use_single_note_off_event:
-        vocab_size = 129 + max_time_shift + velocity_bins
-    else:
-        vocab_size = 256 + max_time_shift + velocity_bins
-    if use_end_of_sequence_event:
-        vocab_size += 1
-
-    # Decode events
-    time = 0
-    velocity = default_velocity
-    velocity_factor = 128 / velocity_bins
-    notes = []
-
-    # Keep track of active note on messages
-    active_notes = defaultdict(list)
-
-    # Iterate over the events
-    for event in array.flatten().tolist():
-        # Skip unknown events
-        if event < offset_note_on or event >= vocab_size:
-            continue
-
-        # End-of-sequence events
-        if use_end_of_sequence_event and event == offset_eos:
-            break
-
-        # Note on events
-        if event < offset_note_off:
-            pitch = event - offset_note_on
-            active_notes[pitch].append(
-                Note(time=time, pitch=pitch, duration=-1, velocity=velocity)
-            )
-
-        # Note off events
-        elif event < offset_time_shift:
-            # Close all notes
-            if use_single_note_off_event:
-                if active_notes:
-                    for pitch, note_list in active_notes.items():
-                        for note in note_list:
-                            note.duration = time - note.time
-                            notes.append(note)
-                    active_notes = defaultdict(list)
-                continue
-
-            pitch = event - offset_note_off
-
-            # Skip it if there is no active notes
-            if not active_notes[pitch]:
-                continue
-
-            # NOTE: There is no way to disambiguate duplicate notes of
-            # the same pitch. Thus, we need a policy for handling
-            # duplicate notes.
-
-            # 'FIFO': (first in first out) close the earliest note
-            elif duplicate_note_mode.lower() == "fifo":
-                note = active_notes[pitch][0]
-                note.duration = time - note.time
-                notes.append(note)
-                del active_notes[pitch][0]
-
-            # 'LIFO': (last in first out) close the latest note on
-            elif duplicate_note_mode.lower() == "lifo":
-                note = active_notes[pitch][-1]
-                note.duration = time - note.time
-                notes.append(note)
-                del active_notes[pitch][-1]
-
-            # 'close_all' - close all note on events
-            elif duplicate_note_mode.lower() == "close_all":
-                for note in active_notes[pitch]:
-                    note.duration = time - note.time
-                    notes.append(note)
-                del active_notes[pitch]
-
-        # Time-shift events
-        elif event < offset_velocity:
-            time += event - offset_time_shift + 1
-
-        # Velocity events
-        elif event < vocab_size:
-            velocity = int((event - offset_velocity) * velocity_factor)
-
-    # Sort the notes
-    notes.sort(key=attrgetter("time", "pitch", "duration", "velocity"))
-
-    # Create the Track and Music objects
-    track = Track(program=program, is_drum=is_drum, notes=notes)
-    music = Music(resolution=resolution, tracks=[track])
-
-    return music
+    # Avoid circular imports
+    from ..processors.event import EventRepresentationProcessor
+    processor = EventRepresentationProcessor(
+        resolution=resolution,
+        default_program=program,
+        default_is_drum=is_drum,
+        use_single_note_off_event=use_single_note_off_event,
+        use_end_of_sequence_event=use_end_of_sequence_event,
+        max_time_shift=max_time_shift,
+        velocity_bins=velocity_bins,
+        default_velocity=default_velocity,
+        duplicate_note_mode=duplicate_note_mode,
+        encode_velocity=encode_velocity,
+        force_velocity_event=force_velocity_event,
+        encode_instrument=encode_instrument,
+        encode_drum_program=encode_drum_program,
+        num_tracks=num_tracks,
+        ignore_empty_tracks=ignore_empty_tracks)
+    return processor.decode(array)
