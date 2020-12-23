@@ -1,8 +1,6 @@
 """Event-based representation output interface."""
-from operator import attrgetter, itemgetter
-from typing import TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING
 
-import numpy as np
 from numpy import ndarray
 
 if TYPE_CHECKING:
@@ -17,6 +15,10 @@ def to_event_representation(
     force_velocity_event: bool = True,
     max_time_shift: int = 100,
     velocity_bins: int = 32,
+    encode_instrument: bool = False,
+    encode_drum_program: bool = False,
+    num_tracks: Optional[int] = None,
+    ignore_empty_tracks: bool = False,
 ) -> ndarray:
     """Encode a Music object into event-based representation.
 
@@ -52,6 +54,20 @@ def to_event_representation(
         decomposed into two or more time-shift events. Defaults to 100.
     velocity_bins : int
         Number of velocity bins to use. Defaults to 32.
+    encode_instrument: bool
+        Whether to encode the `program` and `is_drum` attributes for
+        each track. Defaults to False.
+    encode_drum_program: bool
+        Whether to encode `program` (drum kit) for drums. Defaults to
+        False, which means 0 (standard drum kit) will be used. Has no
+        effect if `encode_instrument` is False.
+    num_tracks: int or None
+        The maximum number of tracks. Defaults to None, which means
+        single-track mode (encode all events as if they were in one
+        track).
+    ignore_empty_tracks: bool
+        Whether empty tracks should be ignored when encoding and deleted
+        when decoding. Defaults to False.
 
     Returns
     -------
@@ -59,68 +75,17 @@ def to_event_representation(
         Encoded array in event-based representation.
 
     """
-    # Collect notes
-    notes = []
-    for track in music.tracks:
-        notes.extend(track.notes)
-
-    # Raise an error if no notes is found
-    if not notes and not use_end_of_sequence_event:
-        raise RuntimeError("No notes found.")
-
-    # Sort the notes
-    notes.sort(key=attrgetter("time", "pitch", "duration", "velocity"))
-
-    # Compute offsets
-    offset_note_on = 0
-    offset_note_off = 128
-    offset_time_shift = 129 if use_single_note_off_event else 256
-    offset_velocity = offset_time_shift + max_time_shift
-    if use_end_of_sequence_event:
-        offset_eos = offset_velocity + velocity_bins
-
-    # Collect note-related events
-    note_events = []
-    last_velocity = -1
-    for note in notes:
-        # Velocity event
-        if encode_velocity:
-            quantized_velocity = int(note.velocity * velocity_bins / 128)
-            if force_velocity_event or quantized_velocity != last_velocity:
-                note_events.append(
-                    (note.time, offset_velocity + quantized_velocity))
-            last_velocity = quantized_velocity
-        # Note on event
-        note_events.append((note.time, offset_note_on + note.pitch))
-        # Note off event
-        if use_single_note_off_event:
-            note_events.append((note.end, offset_note_off))
-        else:
-            note_events.append((note.end, offset_note_off + note.pitch))
-
-    # Sort events by time
-    note_events.sort(key=itemgetter(0))
-
-    # Create a list for all events
-    events = []
-    # Initialize the time cursor
-    time_cursor = 0
-    # Iterate over note events
-    for time, code in note_events:
-        # If event time is after the time cursor, append tick shift
-        # events
-        if time > time_cursor:
-            div, mod = divmod(time - time_cursor, max_time_shift)
-            for _ in range(div):
-                events.append(offset_time_shift + max_time_shift - 1)
-            if mod > 0:
-                events.append(offset_time_shift + mod - 1)
-            events.append(code)
-            time_cursor = time
-        else:
-            events.append(code)
-    # Append the end-of-sequence event
-    if use_end_of_sequence_event:
-        events.append(offset_eos)
-
-    return np.array(events, np.uint16).reshape(-1, 1)
+    # Avoid circular imports
+    from ..processors.event import EventRepresentationProcessor
+    processor = EventRepresentationProcessor(
+        use_single_note_off_event=use_single_note_off_event,
+        use_end_of_sequence_event=use_end_of_sequence_event,
+        encode_velocity=encode_velocity,
+        force_velocity_event=force_velocity_event,
+        max_time_shift=max_time_shift,
+        velocity_bins=velocity_bins,
+        encode_instrument=encode_instrument,
+        encode_drum_program=encode_drum_program,
+        num_tracks=num_tracks,
+        ignore_empty_tracks=ignore_empty_tracks)
+    return processor.encode(music)
