@@ -87,5 +87,6 @@ def to_event_representation(
         encode_instrument=encode_instrument,
         encode_drum_program=encode_drum_program,
         num_tracks=num_tracks,
-        ignore_empty_tracks=ignore_empty_tracks)
+        ignore_empty_tracks=ignore_empty_tracks,
+        resolution=music.resolution)
     return processor.encode(music)
