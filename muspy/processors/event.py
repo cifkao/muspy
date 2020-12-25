@@ -1,3 +1,4 @@
+import abc
 from collections import defaultdict, deque
 from operator import attrgetter, itemgetter
 from typing import Optional, TYPE_CHECKING
@@ -23,7 +24,7 @@ NOTE_ON = "note_on"        # note_on(track_id, pitch)
 NOTE_OFF = "note_off"      # note_off(track_id, pitch)
 VELOCITY = "velocity"      # velocity(track_id, velocity)
 INSTRUMENT = "instrument"  # instrument(track_id, program, is_drum)
-TIME_SHIFT = "time_shift"  # time_shift(ticks)
+TIME_SHIFT = "time_shift"  # time_shift(ticks) or time_shift(beats, ticks)
 EOS = "eos"                # eos()
 
 ALL_NOTES = -1
@@ -112,12 +113,12 @@ class EventRepresentationProcessor:
         ignore_empty_tracks: bool = False,
         resolution: int = DEFAULT_RESOLUTION,
         duplicate_note_mode: str = "fifo",
+        timing: "Optional[Timing]" = None,
     ):
         self.use_single_note_off_event = use_single_note_off_event
         self.use_end_of_sequence_event = use_end_of_sequence_event
         self.encode_velocity = encode_velocity
         self.force_velocity_event = force_velocity_event
-        self.max_time_shift = max_time_shift
         self.velocity_bins = velocity_bins
         self.default_velocity = default_velocity
         self.encode_instrument = encode_instrument
@@ -128,6 +129,10 @@ class EventRepresentationProcessor:
         self.ignore_empty_tracks = ignore_empty_tracks
         self.resolution = resolution
         self.duplicate_note_mode = duplicate_note_mode
+        self.timing = timing
+
+        if self.timing is None:
+            self.timing = TickShiftTiming(max_shift=max_time_shift)
 
         if encode_instrument and num_tracks is None:
             raise ValueError(
@@ -244,18 +249,8 @@ class EventRepresentationProcessor:
         time_cursor = 0
         # Iterate over note events
         for time, event in note_events:
-            # If event time is after the time cursor, append tick shift
-            # events
-            if time > time_cursor:
-                div, mod = divmod(time - time_cursor, self.max_time_shift)
-                for _ in range(div):
-                    events.append((TIME_SHIFT, self.max_time_shift))
-                if mod > 0:
-                    events.append((TIME_SHIFT, mod))
-                events.append(event)
-                time_cursor = time
-            else:
-                events.append(event)
+            events.extend(self.timing.encode(time_cursor, time))
+            events.append(event)
         # Append the end-of-sequence event
         if self.use_end_of_sequence_event:
             events.append((EOS,))
@@ -357,8 +352,7 @@ class EventRepresentationProcessor:
                     active_notes[track_id][pitch].clear()
 
             elif event == TIME_SHIFT:
-                shift, = args
-                time += shift
+                time = self.timing.decode(time, (event, *args))
 
             elif event == VELOCITY:
                 track_id, velocity = args
@@ -388,3 +382,81 @@ class EventRepresentationProcessor:
                 key=attrgetter("time", "pitch", "duration", "velocity"))
 
         return Music(resolution=self.resolution, tracks=track_list)
+
+
+class Timing(abc.ABC):
+    """Abstract base class for time representations."""
+
+    @abc.abstractmethod
+    def encode(self, old_time: int, new_time: int) -> List[tuple]:
+        """Return a sequence of events encoding the given time shift."""
+        pass
+
+    @abc.abstractmethod
+    def decode(self, old_time: int, event: tuple) -> int:
+        """Calculate the updated time after the given timing event."""
+        pass
+
+
+class TickShiftTiming(Timing):
+    """
+    Time representation based on tick shifts.
+    """
+
+    def __init__(self, max_shift: int):
+        self.max_shift = max_shift
+
+        self.event_list = [(TIME_SHIFT, t) for t in range(1, max_shift + 1)]
+
+    def encode(self, old_time: int, new_time: int) -> List[tuple]:
+        div, mod = divmod(new_time - old_time, self.max_shift)
+        events = [(TIME_SHIFT, self.max_shift) for _ in range(div)]
+        if mod > 0:
+            events.append((TIME_SHIFT, mod))
+        return events
+
+    def decode(self, old_time: int, event: tuple) -> int:
+        _, shift = event
+        return old_time + shift
+
+
+class BeatShiftTiming(Timing):
+    """
+    Time representation based on beat shifts.
+
+    Each event specifies the time shift in beats plus the absolute
+    index of the tick within the beat. For example, time_shift(0, 3)
+    means the 4th tick within the current beat, time_shift(1, 11)
+    means the 12th tick within the next beat. Valid events are
+    between time_shift(0, 1) and time_shift(max_shift, 0).
+
+    This is a slightly modified and generalized version of the encoding
+    proposed in the "Groove2Groove" paper (Cífka et al., 2020):
+    https://hal.archives-ouvertes.fr/hal-02923548
+    """
+
+    def __init__(self, resolution: int, max_shift: int):
+        self.max_shift = max_shift
+        self.resolution = resolution
+
+        self.event_list = []  # type: List[tuple]
+        self.event_list.extend((TIME_SHIFT, 0, t) for t in range(1, resolution))
+        self.event_list.extend((TIME_SHIFT, b, t)
+                               for b in range(1, max_shift)
+                               for t in range(0, resolution))
+        self.event_list.append((TIME_SHIFT, max_shift, 0))
+
+    def encode(self, old_time: int, new_time: int) -> List[tuple]:
+        old_beats = old_time // self.resolution
+        new_beats, new_ticks = divmod(new_time, self.resolution)
+        beat_div, beat_mod = divmod(new_beats - old_beats, self.max_shift)
+
+        events = [(TIME_SHIFT, self.max_shift, 0) for _ in range(beat_div)]
+        events.append((TIME_SHIFT, beat_mod, new_ticks))
+
+        return events
+
+    def decode(self, old_time: int, event: tuple) -> int:
+        old_time -= old_time % self.resolution
+        _, beat_shift, ticks = event
+        return old_time + beat_shift * self.resolution + ticks
