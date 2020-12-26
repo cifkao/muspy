@@ -16,7 +16,6 @@ def to_event_representation(
     max_time_shift: int = 100,
     velocity_bins: int = 32,
     encode_instrument: bool = False,
-    encode_drum_program: bool = False,
     num_tracks: Optional[int] = None,
     ignore_empty_tracks: bool = False,
 ) -> ndarray:
@@ -57,10 +56,6 @@ def to_event_representation(
     encode_instrument: bool
         Whether to encode the `program` and `is_drum` attributes for
         each track. Defaults to False.
-    encode_drum_program: bool
-        Whether to encode `program` (drum kit) for drums. Defaults to
-        False, which means 0 (standard drum kit) will be used. Has no
-        effect if `encode_instrument` is False.
     num_tracks: int or None
         The maximum number of tracks. Defaults to None, which means
         single-track mode (encode all events as if they were in one
@@ -85,7 +80,6 @@ def to_event_representation(
         max_time_shift=max_time_shift,
         velocity_bins=velocity_bins,
         encode_instrument=encode_instrument,
-        encode_drum_program=encode_drum_program,
         num_tracks=num_tracks,
         ignore_empty_tracks=ignore_empty_tracks,
         resolution=music.resolution)

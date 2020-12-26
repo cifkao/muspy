@@ -22,7 +22,6 @@ def from_event_representation(
     encode_velocity: bool = False,
     force_velocity_event: bool = True,
     encode_instrument: bool = False,
-    encode_drum_program: bool = False,
     num_tracks: Optional[int] = None,
     ignore_empty_tracks: bool = False,
 ) -> "Music":
@@ -72,10 +71,6 @@ def from_event_representation(
     encode_instrument: bool
         Whether to encode the `program` and `is_drum` attributes for
         each track. Defaults to False.
-    encode_drum_program: bool
-        Whether to encode `program` (drum kit) for drums. Defaults to
-        False, which means 0 (standard drum kit) will be used. Has no
-        effect if `encode_instrument` is False.
     num_tracks: int or None
         The maximum number of tracks. Defaults to None, which means
         single-track mode (encode all events as if they were in one
@@ -109,7 +104,6 @@ def from_event_representation(
         encode_velocity=encode_velocity,
         force_velocity_event=force_velocity_event,
         encode_instrument=encode_instrument,
-        encode_drum_program=encode_drum_program,
         num_tracks=num_tracks,
         ignore_empty_tracks=ignore_empty_tracks)
     return processor.decode(array)
