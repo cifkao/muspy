@@ -146,8 +146,7 @@ class EventRepresentationProcessor:
             for tr in track_ids
             for i in (
                 [ALL_NOTES] if use_single_note_off_event else range(128)))
-        vocab_list.extend(
-            (TIME_SHIFT, t) for t in range(1, max_time_shift + 1))
+        vocab_list.extend(self.timing.vocab_list)
         if encode_velocity or num_tracks is None:
             # In single-track mode, always include velocity tokens
             # for backwards compatibility
@@ -401,7 +400,7 @@ class TickShiftTiming(Timing):
     def __init__(self, max_shift: int):
         self.max_shift = max_shift
 
-        self.event_list = [(TIME_SHIFT, t) for t in range(1, max_shift + 1)]
+        self.vocab_list = [(TIME_SHIFT, t) for t in range(1, max_shift + 1)]
 
     def encode(self, old_time: int, new_time: int) -> List[tuple]:
         div, mod = divmod(new_time - old_time, self.max_shift)
@@ -434,12 +433,12 @@ class BeatShiftTiming(Timing):
         self.max_shift = max_shift
         self.resolution = resolution
 
-        self.event_list = []  # type: List[tuple]
-        self.event_list.extend((TIME_SHIFT, 0, t) for t in range(1, resolution))
-        self.event_list.extend((TIME_SHIFT, b, t)
+        self.vocab_list = []  # type: List[tuple]
+        self.vocab_list.extend((TIME_SHIFT, 0, t) for t in range(1, resolution))
+        self.vocab_list.extend((TIME_SHIFT, b, t)
                                for b in range(1, max_shift)
                                for t in range(0, resolution))
-        self.event_list.append((TIME_SHIFT, max_shift, 0))
+        self.vocab_list.append((TIME_SHIFT, max_shift, 0))
 
     def encode(self, old_time: int, new_time: int) -> List[tuple]:
         old_beats = old_time // self.resolution
