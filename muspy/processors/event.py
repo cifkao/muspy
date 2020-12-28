@@ -3,7 +3,8 @@ from collections import defaultdict, deque
 from operator import attrgetter, itemgetter
 from typing import Optional, TYPE_CHECKING
 if TYPE_CHECKING:
-    from typing import Any, DefaultDict, List
+    from typing import Any, DefaultDict
+from typing import List
 import warnings
 
 from bidict import frozenbidict
@@ -23,8 +24,9 @@ __all__ = [
 NOTE_ON = "note_on"        # note_on(track_id, pitch)
 NOTE_OFF = "note_off"      # note_off(track_id, pitch)
 VELOCITY = "velocity"      # velocity(track_id, velocity)
-INSTRUMENT = "instrument"  # instrument(track_id, program, is_drum)
-TIME_SHIFT = "time_shift"  # time_shift(ticks) or time_shift(beats, ticks)
+PROGRAM = "program"        # program(track_id, program)
+DRUM = "drum"              # drum(track_id)
+TIME_SHIFT = "time_shift"  # time_shift(ticks)
 EOS = "eos"                # eos()
 
 ALL_NOTES = -1
@@ -66,10 +68,6 @@ class EventRepresentationProcessor:
     encode_instrument: bool
         Whether to encode the `program` and `is_drum` attributes for
         each track. Defaults to False.
-    encode_drum_program: bool
-        Whether to encode `program` (drum kit) for drums. Defaults to
-        False, which means 0 (standard drum kit) will be used. Has no
-        effect if `encode_instrument` is False.
     default_program: int
         Default `program` value to use when decoding. Defaults to 0.
     default_is_drum: bool
@@ -106,7 +104,6 @@ class EventRepresentationProcessor:
         velocity_bins: int = 32,
         default_velocity: int = 64,
         encode_instrument: bool = False,
-        encode_drum_program: bool = False,
         default_program: int = 0,
         default_is_drum: bool = False,
         num_tracks: Optional[int] = None,
@@ -122,7 +119,6 @@ class EventRepresentationProcessor:
         self.velocity_bins = velocity_bins
         self.default_velocity = default_velocity
         self.encode_instrument = encode_instrument
-        self.encode_drum_program = encode_drum_program
         self.default_program = default_program
         self.default_is_drum = default_is_drum
         self.num_tracks = num_tracks
@@ -160,21 +156,16 @@ class EventRepresentationProcessor:
                 for tr in track_ids
                 for v in range(velocity_bins))
         if encode_instrument:
-            vocab_list.extend((INSTRUMENT, tr, pr, False)
+            vocab_list.extend((PROGRAM, tr, pr)
                               for tr in track_ids
                               for pr in range(128))
-            if encode_drum_program:
-                vocab_list.extend((INSTRUMENT, tr, pr, True)
-                                  for tr in track_ids
-                                  for pr in range(128))
-            else:
-                vocab_list.extend((INSTRUMENT, tr, 0, True)
-                                  for tr in track_ids)
+            vocab_list.extend((DRUM, tr) for tr in track_ids)
         if use_end_of_sequence_event:
             vocab_list.append((EOS,))
 
         # Map human-readable tuples to integers
-        self.vocab = frozenbidict(enumerate(vocab_list)).inverse  # type: frozenbidict[Any, int]
+        self.vocab = frozenbidict(
+            enumerate(vocab_list)).inverse  # type: frozenbidict[Any, int]
 
     def encode(self, music: Music) -> ndarray:
         if music.resolution != self.resolution:
@@ -195,7 +186,7 @@ class EventRepresentationProcessor:
             # TODO: Maybe warn or throw exception if too many tracks
             track_objs = music.tracks
             if self.ignore_empty_tracks:
-                track_objs = [track for track in music.tracks if track.notes]
+                track_objs = [track for track in track_objs if track.notes]
             track_objs = track_objs[:self.num_tracks]
 
             tracks = [[n for n in track.notes] for track in track_objs]
@@ -203,11 +194,9 @@ class EventRepresentationProcessor:
             # Create instrument events for all tracks
             if self.encode_instrument:
                 for track_id, track in enumerate(track_objs):
-                    if track.is_drum and not self.encode_drum_program:
-                        events.append((INSTRUMENT, track_id, 0, True))
-                    else:
-                        events.append((INSTRUMENT, track_id,
-                                       track.program, track.is_drum))
+                    if track.is_drum:
+                        events.append((DRUM, track_id))
+                    events.append((PROGRAM, track_id, track.program))
 
         # Flatten, store track index with each note
         notes = [(n, tr) for tr, notes in enumerate(tracks) for n in notes]
@@ -285,14 +274,17 @@ class EventRepresentationProcessor:
 
         # Decode events, keeping track of information for each track
         time = 0  # Time is common for all tracks
-        curr_velocity = defaultdict(lambda: self.default_velocity)  # type: DefaultDict[int, int]
+        curr_velocity = defaultdict(
+            lambda: self.default_velocity)  # type: DefaultDict[int, int]
         velocity_factor = 128 / self.velocity_bins
         tracks = defaultdict(lambda: Track(
-            program=self.default_program, is_drum=self.default_is_drum))  # type: DefaultDict[int, Track]
+            program=self.default_program,
+            is_drum=self.default_is_drum))  # type: DefaultDict[int, Track]
         program_is_set = defaultdict(bool)  # type: DefaultDict[int, bool]
 
         # Keep track of active note on messages for each track
-        active_notes = defaultdict(lambda: defaultdict(deque))  # type: DefaultDict[int, DefaultDict[int, deque]]
+        active_notes = defaultdict(lambda: defaultdict(deque)) \
+            # type: DefaultDict[int, DefaultDict[int, deque]]
 
         # Iterate over the events
         for (event, *args) in events:
@@ -328,9 +320,9 @@ class EventRepresentationProcessor:
                 if not active_notes[track_id][pitch]:
                     continue
 
-                # NOTE: There is no way to disambiguate duplicate notes of
-                # the same pitch. Thus, we need a policy for handling
-                # duplicate notes.
+                # NOTE: There is no way to disambiguate duplicate notes
+                # of the same pitch. Thus, we need a policy for
+                # handling duplicate notes.
 
                 # 'FIFO': (first in first out) close the earliest note
                 elif self.duplicate_note_mode.lower() == "fifo":
@@ -358,12 +350,15 @@ class EventRepresentationProcessor:
                 track_id, velocity = args
                 curr_velocity[track_id] = int(velocity * velocity_factor)
 
-            elif event == INSTRUMENT:
-                track_id, program, is_drum = args
+            elif event == PROGRAM:
+                track_id, program = args
                 if not program_is_set[track_id]:
                     tracks[track_id].program = program
-                    tracks[track_id].is_drum = is_drum
                     program_is_set[track_id] = True
+
+            elif event == DRUM:
+                track_id, = args
+                tracks[track_id].is_drum = True
 
         # Extend zero-duration notes to minimum length
         for track in tracks.values():
