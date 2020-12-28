@@ -239,6 +239,7 @@ class EventRepresentationProcessor:
         for time, event in note_events:
             events.extend(self.timing.encode(time_cursor, time))
             events.append(event)
+            time_cursor = time
         # Append the end-of-sequence event
         if self.use_end_of_sequence_event:
             events.append((EOS,))
